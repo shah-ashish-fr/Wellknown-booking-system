@@ -1,0 +1,916 @@
+"use client";
+
+import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+import {
+  User,
+  Calendar,
+  CreditCard,
+  FileText,
+  Loader2,
+  Sparkles,
+  Building2,
+  CheckCircle2,
+  AlertCircle,
+  IndianRupee,
+  ArrowLeft,
+} from "lucide-react";
+import { createBooking, BookingFormData } from "@/app/actions/booking";
+import { PaymentStatus, BookingSource, RoomAllocation } from "@/types/booking";
+import {
+  GUEST_TITLE_OPTIONS,
+  ROOM_TYPE_OPTIONS,
+  TRAVEL_AGENTS,
+} from "@/config/booking-options";
+import {
+  getTotalRoomCount,
+  formatRoomAllocationsSummary,
+} from "@/lib/room-allocations";
+import RoomAllocationsInput from "@/components/room-allocations-input";
+import BookingCalculator from "@/components/booking-calculator";
+
+interface HotelOption {
+  id: string;
+  name: string;
+  location: string;
+}
+
+interface BookingFormProps {
+  hotels: HotelOption[];
+  initialBookingId: string;
+  initialCheckIn: string;
+  initialCheckOut: string;
+  defaultHotelId?: string;
+}
+
+export default function BookingForm({
+  hotels,
+  initialBookingId,
+  initialCheckIn,
+  initialCheckOut,
+  defaultHotelId,
+}: BookingFormProps) {
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
+
+  // Helper to generate a unique readable booking ID on user interaction
+  const generateRandomBookingId = (hotelIdSelected: string) => {
+    const selected = hotels.find((h) => h.id === hotelIdSelected);
+    const prefix = selected ? selected.name.slice(0, 3).toUpperCase() : "WK";
+    const today = new Date();
+    const dateStr = `${today.getFullYear().toString().slice(-2)}${String(today.getMonth() + 1).padStart(2, "0")}${String(today.getDate()).padStart(2, "0")}`;
+    const randomNum = Math.floor(1000 + Math.random() * 9000);
+    return `${prefix}-${dateStr}-${randomNum}`;
+  };
+
+  // Form state initialized deterministically from server props
+  const [formData, setFormData] = useState<BookingFormData>({
+    hotelId: defaultHotelId && hotels.some(h => h.id === defaultHotelId) ? defaultHotelId : (hotels[0]?.id || ""),
+    guestTitle: "",
+    guestName: "",
+    guestPhone: "",
+    bookingId: initialBookingId,
+    checkIn: initialCheckIn,
+    checkOut: initialCheckOut,
+    adults: 1,
+    children: 0,
+    rooms: 1,
+    roomType: ROOM_TYPE_OPTIONS[0],
+    roomAllocations: [{ roomType: ROOM_TYPE_OPTIONS[0], count: 1 }],
+    totalAmount: 0,
+    gstAmount: 0,
+    advanceAmount: 0,
+    paymentStatus: PaymentStatus.PENDING,
+    bookingSource: BookingSource.PHONE,
+    travelAgent: "",
+    includeInExcel: true,
+    notes: "",
+  });
+
+  const handleRoomAllocationsChange = (allocations: RoomAllocation[]) => {
+    const total = getTotalRoomCount(allocations);
+    const summary = formatRoomAllocationsSummary(allocations);
+    setFormData((prev) => ({
+      ...prev,
+      rooms: total,
+      roomType: summary,
+      roomAllocations: allocations,
+    }));
+    if (errors.rooms) {
+      setErrors((prev) => {
+        const next = { ...prev };
+        delete next.rooms;
+        return next;
+      });
+    }
+  };
+
+  // Travel Agent state: selected from dropdown vs manual "Other" input
+  const [selectedTravelAgent, setSelectedTravelAgent] = useState<string>("Other");
+  const [manualTravelAgent, setManualTravelAgent] = useState<string>("");
+
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [serverError, setServerError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  // Calculate nights
+  const calculateNights = () => {
+    if (!formData.checkIn || !formData.checkOut) return 0;
+    const start = new Date(formData.checkIn);
+    const end = new Date(formData.checkOut);
+    const diff = end.getTime() - start.getTime();
+    if (diff < 0) return 0;
+    return Math.max(1, Math.round(diff / (1000 * 60 * 60 * 24)));
+  };
+
+  const nights = calculateNights();
+  const grandTotal = Number(formData.totalAmount || 0) + Number(formData.gstAmount || 0);
+  const balanceDue = Math.max(0, grandTotal - Number(formData.advanceAmount || 0));
+
+  const handleInputChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
+  ) => {
+    const { name, value } = e.target;
+
+    // Clear specific error on change
+    if (errors[name]) {
+      setErrors((prev) => {
+        const next = { ...prev };
+        delete next[name];
+        return next;
+      });
+    }
+
+    if (name === "hotelId") {
+      setFormData((prev) => ({
+        ...prev,
+        hotelId: value,
+      }));
+      return;
+    }
+
+    if (
+      name === "adults" ||
+      name === "children" ||
+      name === "rooms" ||
+      name === "totalAmount" ||
+      name === "gstAmount" ||
+      name === "advanceAmount"
+    ) {
+      const numVal = value === "" ? 0 : Number(value);
+      setFormData((prev) => {
+        const updated = {
+          ...prev,
+          [name]: numVal,
+        };
+
+        // Auto calculate payment status when advance/total change
+        if (name === "totalAmount" || name === "gstAmount" || name === "advanceAmount") {
+          const newTotal =
+            name === "totalAmount"
+              ? numVal
+              : Number(updated.totalAmount || 0);
+          const newGst =
+            name === "gstAmount"
+              ? numVal
+              : Number(updated.gstAmount || 0);
+          const newAdvance =
+            name === "advanceAmount"
+              ? numVal
+              : Number(updated.advanceAmount || 0);
+          const currentGrand = newTotal + newGst;
+
+          if (newAdvance <= 0) {
+            updated.paymentStatus = PaymentStatus.PENDING;
+          } else if (newAdvance >= currentGrand && currentGrand > 0) {
+            updated.paymentStatus = PaymentStatus.FULLY_PAID;
+          } else {
+            updated.paymentStatus = PaymentStatus.ADVANCE_PAID;
+          }
+        }
+
+        return updated;
+      });
+      return;
+    }
+
+    // Handle booking source change — reset travel agent fields when switching away
+    if (name === "bookingSource") {
+      setFormData((prev) => ({
+        ...prev,
+        bookingSource: value as BookingSource,
+        // Clear travel agent if switching away from TRAVEL_AGENT
+        travelAgent: value === BookingSource.TRAVEL_AGENT ? prev.travelAgent : "",
+      }));
+      if (value !== BookingSource.TRAVEL_AGENT) {
+        setSelectedTravelAgent("Other");
+        setManualTravelAgent("");
+      }
+      return;
+    }
+
+    setFormData((prev) => ({
+      ...prev,
+      [name]: value,
+    }));
+  };
+
+  // Phone number handler: only allow digits, max 10
+  const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value;
+    // Only allow digits
+    const digits = raw.replace(/\D/g, "");
+    // Limit to 10 digits
+    const trimmed = digits.slice(0, 10);
+    setFormData((prev) => ({
+      ...prev,
+      guestPhone: trimmed,
+    }));
+    if (errors.guestPhone) {
+      setErrors((prev) => {
+        const next = { ...prev };
+        delete next.guestPhone;
+        return next;
+      });
+    }
+  };
+
+  // Travel agent dropdown handler
+  const handleTravelAgentSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const val = e.target.value;
+    setSelectedTravelAgent(val);
+    if (val !== "Other") {
+      setManualTravelAgent("");
+      setFormData((prev) => ({ ...prev, travelAgent: val }));
+    } else {
+      setFormData((prev) => ({ ...prev, travelAgent: manualTravelAgent }));
+    }
+  };
+
+  // Manual travel agent text input
+  const handleManualAgentChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setManualTravelAgent(val);
+    setFormData((prev) => ({ ...prev, travelAgent: val }));
+  };
+
+  const validateClientSide = () => {
+    const newErrors: Record<string, string> = {};
+
+    if (!formData.guestName.trim()) {
+      newErrors.guestName = "Guest name is required.";
+    }
+
+    if (!formData.hotelId) {
+      newErrors.hotelId = "Please select a hotel.";
+    }
+
+    if (!formData.bookingId.trim()) {
+      newErrors.bookingId = "Booking ID is required.";
+    }
+
+    if (!formData.checkIn) {
+      newErrors.checkIn = "Check-in date is required.";
+    }
+
+    if (!formData.checkOut) {
+      newErrors.checkOut = "Check-out date is required.";
+    } else if (formData.checkIn && formData.checkOut <= formData.checkIn) {
+      newErrors.checkOut = "Check-out must be after check-in date.";
+    }
+
+    if (formData.adults < 1) {
+      newErrors.adults = "At least 1 adult is required.";
+    }
+
+    if (formData.children < 0) {
+      newErrors.children = "Children cannot be negative.";
+    }
+
+    if (formData.rooms < 1) {
+      newErrors.rooms = "At least 1 room is required.";
+    }
+
+    if (formData.totalAmount < 0) {
+      newErrors.totalAmount = "Amount cannot be negative.";
+    }
+
+    if (formData.advanceAmount < 0) {
+      newErrors.advanceAmount = "Advance cannot be negative.";
+    }
+
+    // Phone validation: must be 10 digits if provided
+    if (formData.guestPhone && formData.guestPhone.length !== 10) {
+      newErrors.guestPhone = "Please enter a valid 10-digit mobile number.";
+    }
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setServerError(null);
+
+    if (!validateClientSide()) {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+
+    // Build submission data — prepend +91 to phone for storage
+    const submissionData: BookingFormData = {
+      ...formData,
+      guestPhone: formData.guestPhone ? `+91${formData.guestPhone}` : "",
+    };
+
+    startTransition(async () => {
+      try {
+        const result = await createBooking(submissionData);
+
+        if (result.success && result.bookingId) {
+          setSuccessMessage("Booking successfully created! Redirecting to confirmation...");
+          setTimeout(() => {
+            router.push(`/bookings/${result.bookingId}?created=true`);
+          }, 500);
+        } else {
+          if (result.errors) {
+            setErrors(result.errors);
+          }
+          setServerError(result.message || "Failed to create booking. Please check your inputs.");
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+      } catch (err: unknown) {
+        console.error(err);
+        setServerError("An unexpected error occurred while saving the booking.");
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+    });
+  };
+
+  const selectClass = (hasError: boolean) =>
+    `mt-1.5 block w-full rounded-lg border px-3.5 py-2.5 text-sm font-medium text-slate-900 shadow-2xs focus:outline-none focus:ring-2 min-h-[44px] ${
+      hasError
+        ? "border-rose-300 bg-rose-50/30 focus:border-rose-500 focus:ring-rose-200"
+        : "border-slate-300 bg-white focus:border-indigo-500 focus:ring-indigo-100"
+    }`;
+
+  const inputClass = (hasError: boolean) =>
+    `mt-1.5 block w-full rounded-lg border px-3.5 py-2.5 text-sm text-slate-900 shadow-2xs focus:outline-none focus:ring-2 min-h-[44px] ${
+      hasError
+        ? "border-rose-300 bg-rose-50/30 focus:border-rose-500 focus:ring-rose-200"
+        : "border-slate-300 bg-white focus:border-indigo-500 focus:ring-indigo-100"
+    }`;
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+      <div className="lg:col-span-8">
+        <form onSubmit={handleSubmit} className="space-y-6">
+      {/* Top Banner for Server Messages */}
+      {successMessage && (
+        <div className="flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-800 shadow-xs animate-in fade-in">
+          <CheckCircle2 className="h-5 w-5 text-emerald-600 shrink-0" />
+          <p className="text-sm font-semibold">{successMessage}</p>
+        </div>
+      )}
+
+      {serverError && (
+        <div className="flex items-center gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-800 shadow-xs animate-in fade-in">
+          <AlertCircle className="h-5 w-5 text-rose-600 shrink-0" />
+          <p className="text-sm font-semibold">{serverError}</p>
+        </div>
+      )}
+
+      {/* SECTION 1: GUEST INFORMATION */}
+      <div className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs">
+        <div className="mb-5 flex items-center gap-2.5 border-b border-slate-100 pb-3">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-50 text-indigo-700 font-bold text-xs">
+            1
+          </div>
+          <div>
+            <h2 className="text-base font-bold text-slate-900">Guest Information</h2>
+            <p className="text-xs text-slate-500">Primary guest identity and contact details</p>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          {/* Title + Guest Name row */}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-[140px_1fr]">
+            {/* Guest Title Dropdown */}
+            <div>
+              <label htmlFor="guestTitle" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                Title
+              </label>
+              <select
+                id="guestTitle"
+                name="guestTitle"
+                value={formData.guestTitle || ""}
+                onChange={handleInputChange}
+                className={selectClass(false)}
+              >
+                <option value="">— Select —</option>
+                {GUEST_TITLE_OPTIONS.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Guest Name */}
+            <div>
+              <label htmlFor="guestName" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                Guest Name <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="text"
+                id="guestName"
+                name="guestName"
+                value={formData.guestName}
+                onChange={handleInputChange}
+                placeholder="e.g. Rajesh Kumar"
+                className={inputClass(!!errors.guestName)}
+              />
+              {errors.guestName && <p className="mt-1 text-xs text-rose-600 font-medium">{errors.guestName}</p>}
+            </div>
+          </div>
+
+          {/* Guest Phone with fixed +91 prefix */}
+          <div>
+            <label htmlFor="guestPhone" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+              Phone / WhatsApp Number
+            </label>
+            <div className="mt-1.5 flex">
+              <span className="inline-flex items-center rounded-l-lg border border-r-0 border-slate-300 bg-slate-100 px-3.5 text-sm font-semibold text-slate-600 select-none min-h-[44px]">
+                +91
+              </span>
+              <input
+                type="tel"
+                id="guestPhone"
+                name="guestPhone"
+                value={formData.guestPhone}
+                onChange={handlePhoneChange}
+                placeholder="98765 43210"
+                maxLength={10}
+                inputMode="numeric"
+                pattern="[0-9]*"
+                className={`block w-full rounded-r-lg border px-3.5 py-2.5 text-sm text-slate-900 shadow-2xs focus:outline-none focus:ring-2 min-h-[44px] ${
+                  errors.guestPhone
+                    ? "border-rose-300 bg-rose-50/30 focus:border-rose-500 focus:ring-rose-200"
+                    : "border-slate-300 bg-white focus:border-indigo-500 focus:ring-indigo-100"
+                }`}
+              />
+            </div>
+            {errors.guestPhone ? (
+              <p className="mt-1 text-xs text-rose-600 font-medium">{errors.guestPhone}</p>
+            ) : (
+              <p className="mt-1 text-[11px] text-slate-400">Used for sending 1-click WhatsApp guest confirmation</p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* SECTION 2: STAY DETAILS */}
+      <div className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs">
+        <div className="mb-5 flex items-center justify-between border-b border-slate-100 pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-50 text-indigo-700 font-bold text-xs">
+              2
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-slate-900">Stay Details</h2>
+              <p className="text-xs text-slate-500">Hotel property, dates, rooms, and guest headcount</p>
+            </div>
+          </div>
+          {nights > 0 && (
+            <span className="inline-flex items-center rounded-full bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700 border border-indigo-200">
+              {nights} {nights === 1 ? "Night" : "Nights"} Stay
+            </span>
+          )}
+        </div>
+
+        <div className="space-y-4">
+          {/* Hotel Selector - Full width */}
+          <div>
+            <label htmlFor="hotelId" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+              Select Hotel Property <span className="text-rose-500">*</span>
+            </label>
+            <select
+              id="hotelId"
+              name="hotelId"
+              value={formData.hotelId}
+              onChange={handleInputChange}
+              className={selectClass(!!errors.hotelId)}
+            >
+              {hotels.map((h) => (
+                <option key={h.id} value={h.id}>
+                  {h.name} — {h.location}
+                </option>
+              ))}
+            </select>
+            {errors.hotelId && <p className="mt-1 text-xs text-rose-600 font-medium">{errors.hotelId}</p>}
+          </div>
+
+          {/* Dates: 2 columns on desktop, 1 on mobile */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="checkIn" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                Check-In Date <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="date"
+                id="checkIn"
+                name="checkIn"
+                value={formData.checkIn}
+                onChange={handleInputChange}
+                className={inputClass(!!errors.checkIn)}
+              />
+              {errors.checkIn && <p className="mt-1 text-xs text-rose-600 font-medium">{errors.checkIn}</p>}
+            </div>
+
+            <div>
+              <label htmlFor="checkOut" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                Check-Out Date <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="date"
+                id="checkOut"
+                name="checkOut"
+                value={formData.checkOut}
+                onChange={handleInputChange}
+                min={formData.checkIn}
+                className={inputClass(!!errors.checkOut)}
+              />
+              {errors.checkOut && <p className="mt-1 text-xs text-rose-600 font-medium">{errors.checkOut}</p>}
+            </div>
+          </div>
+
+          {/* Multiple Room Types Allocation */}
+          <RoomAllocationsInput
+            value={formData.roomAllocations || [{ roomType: formData.roomType, count: formData.rooms }]}
+            onChange={handleRoomAllocationsChange}
+            error={errors.rooms}
+          />
+
+          {/* Adults and Children: 2 columns */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="adults" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                Adults (Age 12+) <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="number"
+                id="adults"
+                name="adults"
+                min="1"
+                value={formData.adults}
+                onChange={handleInputChange}
+                className={inputClass(!!errors.adults)}
+              />
+              {errors.adults && <p className="mt-1 text-xs text-rose-600 font-medium">{errors.adults}</p>}
+            </div>
+
+            <div>
+              <label htmlFor="children" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                Children (Under 12)
+              </label>
+              <input
+                type="number"
+                id="children"
+                name="children"
+                min="0"
+                value={formData.children}
+                onChange={handleInputChange}
+                className="mt-1.5 block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 shadow-2xs focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100 min-h-[44px]"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* SECTION 3: PAYMENT */}
+      <div className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs">
+        <div className="mb-5 flex items-center justify-between border-b border-slate-100 pb-3">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-50 text-indigo-700 font-bold text-xs">
+              3
+            </div>
+            <div>
+              <h2 className="text-base font-bold text-slate-900">Payment</h2>
+              <p className="text-xs text-slate-500">Amounts, advance received, balance calculation, and status</p>
+            </div>
+          </div>
+          <div className="text-right">
+            <span className="text-[11px] text-slate-500 block">Balance Due:</span>
+            <span
+              className={`rounded-md px-2 py-0.5 text-xs font-bold ${
+                balanceDue > 0 ? "bg-amber-100 text-amber-900" : "bg-emerald-100 text-emerald-900"
+              }`}
+            >
+              ₹{balanceDue.toLocaleString("en-IN")}
+            </span>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            {/* Total Amount */}
+            <div>
+              <label htmlFor="totalAmount" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                Total Amount (₹) <span className="text-rose-500">*</span>
+              </label>
+              <div className="relative mt-1.5">
+                <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-sm text-slate-400">₹</span>
+                <input
+                  type="number"
+                  id="totalAmount"
+                  name="totalAmount"
+                  min="0"
+                  step="any"
+                  value={formData.totalAmount || ""}
+                  onChange={handleInputChange}
+                  placeholder="0"
+                  className={`block w-full rounded-lg border pl-8 pr-3.5 py-2.5 text-sm font-semibold text-slate-900 shadow-2xs focus:outline-none focus:ring-2 min-h-[44px] ${
+                    errors.totalAmount
+                      ? "border-rose-300 bg-rose-50/30 focus:border-rose-500 focus:ring-rose-200"
+                      : "border-slate-300 bg-white focus:border-indigo-500 focus:ring-indigo-100"
+                  }`}
+                />
+              </div>
+              {errors.totalAmount && <p className="mt-1 text-xs text-rose-600 font-medium">{errors.totalAmount}</p>}
+            </div>
+
+            {/* Advance Amount */}
+            <div>
+              <label htmlFor="advanceAmount" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                Advance Paid (₹)
+              </label>
+              <div className="relative mt-1.5">
+                <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-sm text-slate-400">₹</span>
+                <input
+                  type="number"
+                  id="advanceAmount"
+                  name="advanceAmount"
+                  min="0"
+                  step="any"
+                  value={formData.advanceAmount || ""}
+                  onChange={handleInputChange}
+                  placeholder="0"
+                  className="block w-full rounded-lg border border-slate-300 bg-white pl-8 pr-3.5 py-2.5 text-sm font-semibold text-slate-900 shadow-2xs focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100 min-h-[44px]"
+                />
+              </div>
+            </div>
+
+            {/* Balance Due (Read-only calculation) */}
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                Calculated Balance (₹)
+              </label>
+              <div className="relative mt-1.5">
+                <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-sm text-slate-400">₹</span>
+                <input
+                  type="text"
+                  readOnly
+                  disabled
+                  value={balanceDue}
+                  aria-label="Calculated balance amount"
+                  className="block w-full rounded-lg border border-slate-200 bg-slate-50 pl-8 pr-3.5 py-2.5 text-sm font-bold text-slate-700 shadow-2xs min-h-[44px]"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            {/* Payment Status Dropdown */}
+            <div>
+              <label htmlFor="paymentStatus" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                Payment Status
+              </label>
+              <select
+                id="paymentStatus"
+                name="paymentStatus"
+                value={formData.paymentStatus}
+                onChange={handleInputChange}
+                className="mt-1.5 block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-900 shadow-2xs focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100 min-h-[44px]"
+              >
+                <option value={PaymentStatus.PENDING}>Pending</option>
+                <option value={PaymentStatus.ADVANCE_PAYMENT_DUE}>Advance Payment Due</option>
+                <option value={PaymentStatus.ADVANCE_PAID}>Advance Paid</option>
+                <option value={PaymentStatus.FULLY_PAID}>Fully Paid</option>
+                <option value={PaymentStatus.REFUNDED}>Refunded</option>
+              </select>
+            </div>
+
+            {/* GST (Optional) */}
+            <div>
+              <label htmlFor="gstAmount" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                GST / Tax Amount (₹) <span className="text-slate-400 font-normal">(Optional)</span>
+              </label>
+              <div className="relative mt-1.5">
+                <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-sm text-slate-400">₹</span>
+                <input
+                  type="number"
+                  id="gstAmount"
+                  name="gstAmount"
+                  min="0"
+                  step="any"
+                  value={formData.gstAmount || ""}
+                  onChange={handleInputChange}
+                  placeholder="0"
+                  className="block w-full rounded-lg border border-slate-300 bg-white pl-8 pr-3.5 py-2.5 text-sm text-slate-900 shadow-2xs focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100 min-h-[44px]"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* SECTION 4: ADDITIONAL INFORMATION */}
+      <div className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs">
+        <div className="mb-5 flex items-center gap-2.5 border-b border-slate-100 pb-3">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-50 text-indigo-700 font-bold text-xs">
+            4
+          </div>
+          <div>
+            <h2 className="text-base font-bold text-slate-900">Additional Information</h2>
+            <p className="text-xs text-slate-500">Booking reference ID, booking channel, and guest special requests</p>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            {/* Booking ID */}
+            <div>
+              <div className="flex items-center justify-between">
+                <label htmlFor="bookingId" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                  Booking ID <span className="text-rose-500">*</span>
+                </label>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setFormData((prev) => ({
+                      ...prev,
+                      bookingId: generateRandomBookingId(prev.hotelId),
+                    }))
+                  }
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 hover:text-indigo-800"
+                >
+                  <Sparkles className="h-3 w-3" />
+                  Auto Generate
+                </button>
+              </div>
+              <input
+                type="text"
+                id="bookingId"
+                name="bookingId"
+                value={formData.bookingId}
+                onChange={handleInputChange}
+                placeholder="e.g. HSKN-2610-020"
+                className={`mt-1.5 block w-full rounded-lg border px-3.5 py-2.5 font-mono text-sm text-slate-900 shadow-2xs focus:outline-none focus:ring-2 min-h-[44px] ${
+                  errors.bookingId
+                    ? "border-rose-300 bg-rose-50/30 focus:border-rose-500 focus:ring-rose-200"
+                    : "border-slate-300 bg-white focus:border-indigo-500 focus:ring-indigo-100"
+                }`}
+              />
+              {errors.bookingId && <p className="mt-1 text-xs text-rose-600 font-medium">{errors.bookingId}</p>}
+            </div>
+
+            {/* Booking Source */}
+            <div>
+              <label htmlFor="bookingSource" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                Booking Source
+              </label>
+              <select
+                id="bookingSource"
+                name="bookingSource"
+                value={formData.bookingSource}
+                onChange={handleInputChange}
+                className="mt-1.5 block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-900 shadow-2xs focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100 min-h-[44px]"
+              >
+                <option value={BookingSource.PHONE}>Phone</option>
+                <option value={BookingSource.WHATSAPP}>WhatsApp</option>
+                <option value={BookingSource.WEBSITE}>Website</option>
+                <option value={BookingSource.OFFLINE}>Offline</option>
+                <option value={BookingSource.TRAVEL_AGENT}>Travel Agent</option>
+                <option value={BookingSource.OTHER}>Other</option>
+              </select>
+            </div>
+
+            {/* Include in Excel */}
+            <div>
+              <label htmlFor="includeInExcel" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                Include in Excel
+              </label>
+              <select
+                id="includeInExcel"
+                name="includeInExcel"
+                value={formData.includeInExcel ? "yes" : "no"}
+                onChange={(e) =>
+                  setFormData((prev) => ({
+                    ...prev,
+                    includeInExcel: e.target.value === "yes",
+                  }))
+                }
+                className="mt-1.5 block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm font-medium text-slate-900 shadow-2xs focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100 min-h-[44px]"
+              >
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Travel Agent conditional fields — only shown when source is TRAVEL_AGENT */}
+          {formData.bookingSource === BookingSource.TRAVEL_AGENT && (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 p-4 rounded-lg border border-indigo-100 bg-indigo-50/30">
+              <div>
+                <label htmlFor="travelAgentSelect" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                  Select Travel Agent
+                </label>
+                <select
+                  id="travelAgentSelect"
+                  value={selectedTravelAgent}
+                  onChange={handleTravelAgentSelect}
+                  className={selectClass(false)}
+                >
+                  {TRAVEL_AGENTS.map((agent) => (
+                    <option key={agent} value={agent}>{agent}</option>
+                  ))}
+                </select>
+              </div>
+
+              {selectedTravelAgent === "Other" && (
+                <div>
+                  <label htmlFor="travelAgentManual" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                    Travel Agent Name
+                  </label>
+                  <input
+                    type="text"
+                    id="travelAgentManual"
+                    value={manualTravelAgent}
+                    onChange={handleManualAgentChange}
+                    placeholder="Enter travel agent name"
+                    className={inputClass(false)}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Notes */}
+          <div>
+            <label htmlFor="notes" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+              Special Notes / Requests (Optional)
+            </label>
+            <textarea
+              id="notes"
+              name="notes"
+              rows={3}
+              value={formData.notes || ""}
+              onChange={handleInputChange}
+              placeholder="e.g. Late check-in requested at 10 PM, ground floor room preferred, extra mattress..."
+              className="mt-1.5 block w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 shadow-2xs focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* ACTION BUTTONS: PROMINENT & EASY TO REACH */}
+      <div className="flex flex-col-reverse sm:flex-row items-center justify-end gap-3 pt-4 border-t border-slate-200">
+        <Link
+          href="/bookings"
+          className="w-full sm:w-auto inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700 shadow-2xs hover:bg-slate-50 transition-colors min-h-[44px]"
+        >
+          Cancel
+        </Link>
+
+        <button
+          type="submit"
+          disabled={isPending}
+          className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-8 py-3 text-sm font-semibold text-white shadow-xs hover:bg-indigo-700 active:bg-indigo-800 transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 min-h-[44px]"
+        >
+          {isPending ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>Saving Reservation...</span>
+            </>
+          ) : (
+            <>
+              <CheckCircle2 className="h-4 w-4" />
+              <span>Save Booking</span>
+            </>
+          )}
+        </button>
+      </div>
+    </form>
+
+        {/* Calculator on mobile: below booking form */}
+        <div className="mt-8 block lg:hidden pb-12">
+          <BookingCalculator />
+        </div>
+      </div>
+
+      {/* Calculator on desktop: sticky right panel */}
+      <div className="hidden lg:block lg:col-span-4 sticky top-6">
+        <BookingCalculator />
+      </div>
+    </div>
+  );
+}

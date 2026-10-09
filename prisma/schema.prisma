@@ -1,0 +1,78 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Hotel {
+  id        String    @id @default(cuid())
+  name      String
+  location  String
+  createdAt DateTime  @default(now())
+  bookings  Booking[]
+
+  @@map("hotels")
+}
+
+enum PaymentStatus {
+  PENDING             @map("Pending")
+  ADVANCE_PAYMENT_DUE @map("Advance Payment Due")
+  ADVANCE_PAID        @map("Advance Paid")
+  FULLY_PAID          @map("Fully Paid")
+  REFUNDED            @map("Refunded")
+}
+
+enum BookingSource {
+  WHATSAPP      @map("WhatsApp")
+  PHONE         @map("Phone")
+  WEBSITE       @map("Website")
+  OFFLINE       @map("Offline")
+  OTHER         @map("Other")
+  TRAVEL_AGENT  @map("Travel Agent")
+}
+
+enum BookingStatus {
+  CONFIRMED @map("Confirmed")
+  CANCELLED @map("Cancelled")
+}
+
+model Booking {
+  id                 String        @id @default(cuid())
+  bookingId          String        @unique
+  hotelId            String
+  hotel              Hotel         @relation(fields: [hotelId], references: [id])
+  guestTitle         String?
+  guestName          String
+  guestPhone         String
+  checkIn            DateTime
+  checkOut           DateTime
+  adults             Int           @default(1)
+  children           Int           @default(0)
+  rooms              Int           @default(1)
+  roomType           String        @default("Standard")
+  roomAllocations    Json?
+  totalAmount        Float         @default(0)
+  gstAmount          Float         @default(0)
+  advanceAmount      Float         @default(0)
+  paymentStatus      PaymentStatus @default(PENDING)
+  bookingSource      BookingSource @default(WHATSAPP)
+  travelAgent        String?
+  includeInExcel     Boolean       @default(true)
+  status             BookingStatus @default(CONFIRMED)
+  cancelledAt        DateTime?
+  cancellationReason String?
+  notes              String?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  @@index([hotelId])
+  @@index([checkIn])
+  @@index([paymentStatus])
+  @@index([status])
+  @@index([includeInExcel])
+  @@map("bookings")
+}
+

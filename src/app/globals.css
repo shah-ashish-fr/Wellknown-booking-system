@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+:root {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+body {
+  background-color: #f8fafc;
+  color: #0f172a;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Ensure accessible and clean focus states */
+:focus-visible {
+  outline: 2px solid #4f46e5;
+  outline-offset: 2px;
+}
+
+/* Touch targets on mobile */
+@media (max-width: 640px) {
+  button, a, input, select, textarea {
+    touch-action: manipulation;
+  }
+}
