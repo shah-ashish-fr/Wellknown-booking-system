@@ -41,7 +41,7 @@ const HOTEL_METAS: Record<string, HotelMeta> = {
   "manas-homestay": {
     mapsUrl: "https://maps.app.goo.gl/xYmVyuvknaAq6SoH7",
     phone: "+91 76000 30080",
-    reception: "+91 98984 27347 (Owner Emergency)",
+    reception: "+91 8733013182 (For Emergency)",
     whatsappDesk: "+91 88660 07770",
   },
 };

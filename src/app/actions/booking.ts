@@ -1,7 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/db";
-import { PaymentStatus, BookingSource, BookingStatus, RoomAllocation } from "@/types/booking";
+import { PaymentStatus, BookingSource, BookingStatus, RoomAllocation, RoomPricing, MealSelection } from "@/types/booking";
 import { revalidatePath } from "next/cache";
 import { capitalizeGuestName } from "@/lib/formatters";
 import {
@@ -23,6 +23,8 @@ export interface BookingFormData {
   rooms: number;
   roomType: string;
   roomAllocations?: RoomAllocation[];
+  roomPricing?: RoomPricing[];
+  mealSelections?: MealSelection[];
   totalAmount: number;
   gstAmount: number;
   advanceAmount: number;
@@ -245,6 +247,8 @@ export async function createBooking(data: BookingFormData): Promise<ActionResult
         rooms: totalRooms,
         roomType: formattedRoomType,
         roomAllocations: allocationsToStore as any,
+        roomPricing: data.roomPricing && data.roomPricing.length > 0 ? (data.roomPricing as any) : null,
+        mealSelections: data.mealSelections && data.mealSelections.length > 0 ? (data.mealSelections as any) : null,
         totalAmount: Number(data.totalAmount),
         gstAmount: Number(data.gstAmount),
         advanceAmount: Number(data.advanceAmount),
@@ -417,6 +421,8 @@ export async function updateBooking(id: string, data: BookingFormData): Promise<
         rooms: totalRooms,
         roomType: formattedRoomType,
         roomAllocations: allocationsToStore as any,
+        roomPricing: data.roomPricing && data.roomPricing.length > 0 ? (data.roomPricing as any) : null,
+        mealSelections: data.mealSelections && data.mealSelections.length > 0 ? (data.mealSelections as any) : null,
         totalAmount: Number(data.totalAmount),
         gstAmount: Number(data.gstAmount),
         advanceAmount: Number(data.advanceAmount),

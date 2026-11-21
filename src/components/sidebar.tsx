@@ -13,6 +13,7 @@ import {
   Menu,
   X,
   Plus,
+  BookOpen,
 } from "lucide-react";
 
 interface NavItem {
@@ -26,6 +27,7 @@ const navItems: NavItem[] = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard, exact: true },
   { href: "/bookings", label: "Bookings", icon: CalendarDays },
   { href: "/reports", label: "Reports", icon: BarChart3 },
+  { href: "/brochures", label: "Brochures", icon: BookOpen },
   { href: "/hotels", label: "Hotels", icon: Building2 },
   { href: "/settings", label: "Settings", icon: Settings },
 ];

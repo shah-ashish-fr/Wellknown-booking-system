@@ -9,6 +9,8 @@
     "start": "next start",
     "lint": "eslint",
     "postinstall": "prisma generate",
+    "db:start": "scripts\\start-db.bat",
+    "db:stop": "scripts\\stop-db.bat",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:seed": "prisma db seed",

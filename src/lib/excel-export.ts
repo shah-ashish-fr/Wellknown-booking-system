@@ -173,6 +173,33 @@ export function populateWorksheet(
         : "BOOKING CANCELLED";
     }
 
+    // Parse room pricing & meal selections
+    let roomPricingList: any[] = [];
+    if ((booking as any).roomPricing) {
+      if (typeof (booking as any).roomPricing === "string") {
+        try { roomPricingList = JSON.parse((booking as any).roomPricing); } catch {}
+      } else if (Array.isArray((booking as any).roomPricing)) {
+        roomPricingList = (booking as any).roomPricing;
+      }
+    }
+    let mealSelectionsList: any[] = [];
+    if ((booking as any).mealSelections) {
+      if (typeof (booking as any).mealSelections === "string") {
+        try { mealSelectionsList = JSON.parse((booking as any).mealSelections); } catch {}
+      } else if (Array.isArray((booking as any).mealSelections)) {
+        mealSelectionsList = (booking as any).mealSelections;
+      }
+    }
+
+    // Append meal summary to WHOSE REF / Remarks column if meals are present
+    if (mealSelectionsList.length > 0) {
+      const mealParts = mealSelectionsList.map((m: any) =>
+        `${m.mealType || "Meal"}: ₹${Number(m.subtotal || 0).toLocaleString("en-IN")}`
+      );
+      const mealsSummary = `Meals: [${mealParts.join(", ")}]`;
+      whoseRef = whoseRef ? `${whoseRef} | ${mealsSummary}` : mealsSummary;
+    }
+
     const row = ws.getRow(rowNumber);
     row.height = 22;
 
@@ -198,11 +225,20 @@ export function populateWorksheet(
     row.getCell(10).value = nights;
     // Col 11: EXTRA ADULT
     row.getCell(11).value = extraAdults > 0 ? extraAdults : null;
-    // Col 12: PER ROOM CHARGES (Formula `=P{row}/(I{row}*J{row})` with computed fallback)
-    row.getCell(12).value = {
-      formula: `P${rowNumber}/(I${rowNumber}*J${rowNumber})`,
-      result: perRoomCharge,
-    };
+    // Col 12: PER ROOM CHARGES
+    // If exact room pricing exists for a single room type, use it; otherwise compute or use Excel formula
+    const singlePrice = roomPricingList.length === 1 && Number(roomPricingList[0].pricePerNight) > 0
+      ? Number(roomPricingList[0].pricePerNight)
+      : null;
+
+    if (singlePrice) {
+      row.getCell(12).value = singlePrice;
+    } else {
+      row.getCell(12).value = {
+        formula: `P${rowNumber}/(I${rowNumber}*J${rowNumber})`,
+        result: perRoomCharge,
+      };
+    }
     row.getCell(12).numFmt = "#,##0";
     // Col 13: EXTRA ADULT CHARGES
     row.getCell(13).value = null;

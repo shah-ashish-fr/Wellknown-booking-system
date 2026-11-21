@@ -50,6 +50,8 @@ export default async function EditBookingPage({ params }: PageProps) {
     rooms: booking.rooms,
     roomType: booking.roomType,
     roomAllocations: booking.roomAllocations as any,
+    roomPricing: booking.roomPricing as any,
+    mealSelections: booking.mealSelections as any,
     totalAmount: booking.totalAmount,
     gstAmount: booking.gstAmount,
     advanceAmount: booking.advanceAmount,

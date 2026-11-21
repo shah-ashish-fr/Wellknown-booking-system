@@ -36,3 +36,19 @@ export type RoomTypeOption = (typeof ROOM_TYPE_OPTIONS)[number];
 export const TRAVEL_AGENTS: string[] = [
   "Other",
 ];
+
+/**
+ * Meal type options — currently enabled only for Hotel Shree Kesari Nandan.
+ */
+export const MEAL_TYPE_OPTIONS = [
+  "Breakfast",
+  "Lunch",
+  "Dinner",
+] as const;
+export type MealTypeOption = (typeof MEAL_TYPE_OPTIONS)[number];
+
+/**
+ * Hotel name (substring match) for which meal selection is enabled.
+ * Matched case-insensitively using includes().
+ */
+export const MEAL_ENABLED_HOTEL_KEYWORD = "kesari";

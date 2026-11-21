@@ -16,7 +16,7 @@ import {
   ArrowLeft,
 } from "lucide-react";
 import { updateBooking, BookingFormData } from "@/app/actions/booking";
-import { PaymentStatus, BookingSource, RoomAllocation } from "@/types/booking";
+import { PaymentStatus, BookingSource, RoomAllocation, RoomPricing, MealSelection } from "@/types/booking";
 import {
   GUEST_TITLE_OPTIONS,
   ROOM_TYPE_OPTIONS,
@@ -28,6 +28,7 @@ import {
   getTotalRoomCount,
 } from "@/lib/room-allocations";
 import RoomAllocationsInput from "@/components/room-allocations-input";
+import MealSelectionsInput from "@/components/meal-selections-input";
 import BookingCalculator from "@/components/booking-calculator";
 
 interface HotelOption {
@@ -52,6 +53,8 @@ interface EditBookingFormProps {
     rooms: number;
     roomType: string;
     roomAllocations?: RoomAllocation[] | null;
+    roomPricing?: RoomPricing[] | null;
+    mealSelections?: MealSelection[] | null;
     totalAmount: number;
     gstAmount: number;
     advanceAmount: number;
@@ -77,6 +80,29 @@ export default function EditBookingForm({ id, hotels, initialData }: EditBooking
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
+  // Safely parse initial room pricing & meals
+  const parsedInitialPricing: RoomPricing[] = Array.isArray(initialData.roomPricing)
+    ? initialData.roomPricing
+    : typeof initialData.roomPricing === "string"
+    ? (() => { try { return JSON.parse(initialData.roomPricing); } catch { return []; } })()
+    : [];
+
+  const parsedInitialMeals: MealSelection[] = Array.isArray(initialData.mealSelections)
+    ? initialData.mealSelections
+    : typeof initialData.mealSelections === "string"
+    ? (() => { try { return JSON.parse(initialData.mealSelections); } catch { return []; } })()
+    : [];
+
+  const initialRoomCharges = parsedInitialPricing.reduce((sum, p) => sum + (p.subtotal || 0), 0);
+  const initialMealCharges = parsedInitialMeals.reduce((sum, m) => sum + (m.subtotal || 0), 0);
+  const initialExtra = (initialRoomCharges > 0 || initialMealCharges > 0)
+    ? Math.max(0, initialData.totalAmount - initialRoomCharges - initialMealCharges)
+    : 0;
+
+  const [extraCharges, setExtraCharges] = useState<number>(initialExtra);
+
+  const initialAllocations = parseRoomAllocations(initialData.roomAllocations, initialData.roomType, initialData.rooms);
+
   const [formData, setFormData] = useState<BookingFormData>({
     hotelId: initialData.hotelId,
     guestTitle: initialData.guestTitle || "",
@@ -89,7 +115,9 @@ export default function EditBookingForm({ id, hotels, initialData }: EditBooking
     children: initialData.children,
     rooms: initialData.rooms,
     roomType: initialData.roomType,
-    roomAllocations: parseRoomAllocations(initialData.roomAllocations, initialData.roomType, initialData.rooms),
+    roomAllocations: initialAllocations,
+    roomPricing: parsedInitialPricing,
+    mealSelections: parsedInitialMeals,
     totalAmount: initialData.totalAmount,
     gstAmount: initialData.gstAmount,
     advanceAmount: initialData.advanceAmount,
@@ -100,20 +128,170 @@ export default function EditBookingForm({ id, hotels, initialData }: EditBooking
     notes: initialData.notes || "",
   });
 
+  // Check if selected hotel is Hotel Shree Kesari Nandan
+  const selectedHotel = hotels.find((h) => h.id === formData.hotelId);
+  const isMealHotel = selectedHotel?.name?.toLowerCase().includes("kesari") ?? false;
+
+  // Calculate nights
+  const calculateNights = (inDateStr?: string, outDateStr?: string) => {
+    const checkIn = inDateStr || formData.checkIn;
+    const checkOut = outDateStr || formData.checkOut;
+    if (!checkIn || !checkOut) return 0;
+    const start = new Date(checkIn);
+    const end = new Date(checkOut);
+    const diff = end.getTime() - start.getTime();
+    if (diff < 0) return 0;
+    return Math.max(1, Math.round(diff / (1000 * 60 * 60 * 24)));
+  };
+
+  const nights = calculateNights();
+
+  // Computations
+  const totalRoomCharges = (formData.roomPricing || []).reduce((sum, p) => sum + (p.subtotal || 0), 0);
+  const totalMealCharges = isMealHotel
+    ? (formData.mealSelections || []).reduce((sum, m) => sum + (m.subtotal || 0), 0)
+    : 0;
+
   const handleRoomAllocationsChange = (allocations: RoomAllocation[]) => {
     const total = getTotalRoomCount(allocations);
     const summary = formatRoomAllocationsSummary(allocations);
-    setFormData((prev) => ({
-      ...prev,
-      rooms: total,
-      roomType: summary,
-      roomAllocations: allocations,
-    }));
+    const effectiveNights = Math.max(1, nights);
+
+    setFormData((prev) => {
+      const currentPricing = prev.roomPricing || [];
+      const updatedPricing: RoomPricing[] = allocations.map((a) => {
+        const existing = currentPricing.find((p) => p.roomType === a.roomType);
+        const price = existing?.pricePerNight || 0;
+        return {
+          roomType: a.roomType,
+          count: a.count,
+          pricePerNight: price,
+          nights: effectiveNights,
+          subtotal: a.count * price * effectiveNights,
+        };
+      });
+
+      const roomTotal = updatedPricing.reduce((sum, p) => sum + (p.subtotal || 0), 0);
+      const mealTotal = isMealHotel
+        ? (prev.mealSelections || []).reduce((sum, m) => sum + (m.subtotal || 0), 0)
+        : 0;
+
+      const updated = {
+        ...prev,
+        rooms: total,
+        roomType: summary,
+        roomAllocations: allocations,
+        roomPricing: updatedPricing,
+        totalAmount: (roomTotal > 0 || mealTotal > 0) ? (roomTotal + mealTotal + extraCharges) : prev.totalAmount,
+      };
+
+      const currentGrand = updated.totalAmount + Number(updated.gstAmount || 0);
+      const advance = Number(updated.advanceAmount || 0);
+      if (advance <= 0) {
+        updated.paymentStatus = PaymentStatus.PENDING;
+      } else if (advance >= currentGrand && currentGrand > 0) {
+        updated.paymentStatus = PaymentStatus.FULLY_PAID;
+      } else {
+        updated.paymentStatus = PaymentStatus.ADVANCE_PAID;
+      }
+      return updated;
+    });
+
     if (errors.rooms) {
       setErrors((prev) => {
         const next = { ...prev };
         delete next.rooms;
         return next;
+      });
+    }
+  };
+
+  // Handle room pricing change
+  const handlePricingChange = (pricing: RoomPricing[]) => {
+    const roomTotal = pricing.reduce((sum, p) => sum + (p.subtotal || 0), 0);
+    const mealTotal = isMealHotel
+      ? (formData.mealSelections || []).reduce((sum, m) => sum + (m.subtotal || 0), 0)
+      : 0;
+    const newTotal = roomTotal + mealTotal + extraCharges;
+
+    setFormData((prev) => {
+      const updated = {
+        ...prev,
+        roomPricing: pricing,
+        totalAmount: (roomTotal > 0 || mealTotal > 0) ? newTotal : prev.totalAmount,
+      };
+      const currentGrand = updated.totalAmount + Number(updated.gstAmount || 0);
+      const advance = Number(updated.advanceAmount || 0);
+      if (advance <= 0) {
+        updated.paymentStatus = PaymentStatus.PENDING;
+      } else if (advance >= currentGrand && currentGrand > 0) {
+        updated.paymentStatus = PaymentStatus.FULLY_PAID;
+      } else {
+        updated.paymentStatus = PaymentStatus.ADVANCE_PAID;
+      }
+      return updated;
+    });
+
+    if (errors.totalAmount) {
+      setErrors((prev) => {
+        const next = { ...prev };
+        delete next.totalAmount;
+        return next;
+      });
+    }
+  };
+
+  // Handle meal selections change
+  const handleMealSelectionsChange = (meals: MealSelection[]) => {
+    const mealTotal = meals.reduce((sum, m) => sum + (m.subtotal || 0), 0);
+    const roomTotal = (formData.roomPricing || []).reduce((sum, p) => sum + (p.subtotal || 0), 0);
+    const newTotal = roomTotal + mealTotal + extraCharges;
+
+    setFormData((prev) => {
+      const updated = {
+        ...prev,
+        mealSelections: meals,
+        totalAmount: (roomTotal > 0 || mealTotal > 0) ? newTotal : prev.totalAmount,
+      };
+      const currentGrand = updated.totalAmount + Number(updated.gstAmount || 0);
+      const advance = Number(updated.advanceAmount || 0);
+      if (advance <= 0) {
+        updated.paymentStatus = PaymentStatus.PENDING;
+      } else if (advance >= currentGrand && currentGrand > 0) {
+        updated.paymentStatus = PaymentStatus.FULLY_PAID;
+      } else {
+        updated.paymentStatus = PaymentStatus.ADVANCE_PAID;
+      }
+      return updated;
+    });
+
+    if (errors.totalAmount) {
+      setErrors((prev) => {
+        const next = { ...prev };
+        delete next.totalAmount;
+        return next;
+      });
+    }
+  };
+
+  // Handle extra charges change
+  const handleExtraChargesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = Number(e.target.value) || 0;
+    setExtraCharges(val);
+    if (totalRoomCharges > 0 || totalMealCharges > 0) {
+      const newTotal = totalRoomCharges + totalMealCharges + val;
+      setFormData((prev) => {
+        const updated = { ...prev, totalAmount: newTotal };
+        const currentGrand = newTotal + Number(updated.gstAmount || 0);
+        const advance = Number(updated.advanceAmount || 0);
+        if (advance <= 0) {
+          updated.paymentStatus = PaymentStatus.PENDING;
+        } else if (advance >= currentGrand && currentGrand > 0) {
+          updated.paymentStatus = PaymentStatus.FULLY_PAID;
+        } else {
+          updated.paymentStatus = PaymentStatus.ADVANCE_PAID;
+        }
+        return updated;
       });
     }
   };
@@ -134,16 +312,6 @@ export default function EditBookingForm({ id, hotels, initialData }: EditBooking
   const [serverError, setServerError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  const calculateNights = () => {
-    if (!formData.checkIn || !formData.checkOut) return 0;
-    const start = new Date(formData.checkIn);
-    const end = new Date(formData.checkOut);
-    const diff = end.getTime() - start.getTime();
-    if (diff < 0) return 0;
-    return Math.max(1, Math.round(diff / (1000 * 60 * 60 * 24)));
-  };
-
-  const nights = calculateNights();
   const grandTotal = Number(formData.totalAmount || 0) + Number(formData.gstAmount || 0);
   const balanceDue = Math.max(0, grandTotal - Number(formData.advanceAmount || 0));
 
@@ -161,10 +329,60 @@ export default function EditBookingForm({ id, hotels, initialData }: EditBooking
     }
 
     if (name === "hotelId") {
-      setFormData((prev) => ({
-        ...prev,
-        hotelId: value,
-      }));
+      const nextHotel = hotels.find((h) => h.id === value);
+      const nextIsMealHotel = nextHotel?.name?.toLowerCase().includes("kesari") ?? false;
+
+      setFormData((prev) => {
+        const nextMeals = nextIsMealHotel ? prev.mealSelections : [];
+        const mealTotal = nextIsMealHotel
+          ? (nextMeals || []).reduce((sum, m) => sum + (m.subtotal || 0), 0)
+          : 0;
+        const roomTotal = (prev.roomPricing || []).reduce((sum, p) => sum + (p.subtotal || 0), 0);
+
+        return {
+          ...prev,
+          hotelId: value,
+          mealSelections: nextMeals,
+          totalAmount: (roomTotal > 0 || mealTotal > 0) ? (roomTotal + mealTotal + extraCharges) : prev.totalAmount,
+        };
+      });
+      return;
+    }
+
+    if (name === "checkIn" || name === "checkOut") {
+      const newCheckIn = name === "checkIn" ? value : formData.checkIn;
+      const newCheckOut = name === "checkOut" ? value : formData.checkOut;
+      const effectiveNights = calculateNights(newCheckIn, newCheckOut);
+
+      setFormData((prev) => {
+        const updatedPricing = (prev.roomPricing || []).map((p) => ({
+          ...p,
+          nights: effectiveNights,
+          subtotal: p.count * p.pricePerNight * effectiveNights,
+        }));
+        const roomTotal = updatedPricing.reduce((sum, p) => sum + (p.subtotal || 0), 0);
+        const mealTotal = isMealHotel
+          ? (prev.mealSelections || []).reduce((sum, m) => sum + (m.subtotal || 0), 0)
+          : 0;
+
+        const updated = {
+          ...prev,
+          [name]: value,
+          roomPricing: updatedPricing,
+          totalAmount: (roomTotal > 0 || mealTotal > 0) ? (roomTotal + mealTotal + extraCharges) : prev.totalAmount,
+        };
+
+        const currentGrand = updated.totalAmount + Number(updated.gstAmount || 0);
+        const advance = Number(updated.advanceAmount || 0);
+        if (advance <= 0) {
+          updated.paymentStatus = PaymentStatus.PENDING;
+        } else if (advance >= currentGrand && currentGrand > 0) {
+          updated.paymentStatus = PaymentStatus.FULLY_PAID;
+        } else {
+          updated.paymentStatus = PaymentStatus.ADVANCE_PAID;
+        }
+        return updated;
+      });
       return;
     }
 
@@ -547,12 +765,27 @@ export default function EditBookingForm({ id, hotels, initialData }: EditBooking
             </div>
           </div>
 
-          {/* Multiple Room Types Allocation */}
+          {/* Multiple Room Types Allocation with individual room pricing */}
           <RoomAllocationsInput
             value={formData.roomAllocations || [{ roomType: formData.roomType, count: formData.rooms }]}
             onChange={handleRoomAllocationsChange}
+            roomPricing={formData.roomPricing}
+            onPricingChange={handlePricingChange}
+            nights={nights}
             error={errors.rooms}
           />
+
+          {/* Meal Options — Hotel Shree Kesari Nandan ONLY */}
+          {isMealHotel && (
+            <div className="pt-2">
+              <MealSelectionsInput
+                value={formData.mealSelections || []}
+                onChange={handleMealSelectionsChange}
+                nights={nights}
+                adults={formData.adults}
+              />
+            </div>
+          )}
 
           {/* Adults and Children: 2 columns */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -615,7 +848,33 @@ export default function EditBookingForm({ id, hotels, initialData }: EditBooking
         </div>
 
         <div className="space-y-4">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          {/* Automatic Calculation Summary Banner if pricing entered */}
+          {(totalRoomCharges > 0 || totalMealCharges > 0) && (
+            <div className="rounded-lg border border-indigo-100 bg-indigo-50/50 p-3.5 flex flex-wrap items-center justify-between gap-2.5 text-xs">
+              <div className="flex items-center gap-3 flex-wrap">
+                {totalRoomCharges > 0 && (
+                  <span className="text-slate-700">
+                    Room Charges: <strong className="font-bold text-slate-900">₹{totalRoomCharges.toLocaleString("en-IN")}</strong>
+                  </span>
+                )}
+                {totalMealCharges > 0 && (
+                  <span className="text-slate-700">
+                    Meal Charges: <strong className="font-bold text-amber-800">₹{totalMealCharges.toLocaleString("en-IN")}</strong>
+                  </span>
+                )}
+                {extraCharges > 0 && (
+                  <span className="text-slate-700">
+                    Extra Charges: <strong className="font-bold text-slate-900">₹{extraCharges.toLocaleString("en-IN")}</strong>
+                  </span>
+                )}
+              </div>
+              <span className="font-bold text-xs text-indigo-700 bg-white px-2.5 py-1 rounded-md border border-indigo-200">
+                Auto Total: ₹{(totalRoomCharges + totalMealCharges + extraCharges).toLocaleString("en-IN")}
+              </span>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
             {/* Total Amount */}
             <div>
               <label htmlFor="totalAmount" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
@@ -640,6 +899,26 @@ export default function EditBookingForm({ id, hotels, initialData }: EditBooking
                 />
               </div>
               {errors.totalAmount && <p className="mt-1 text-xs text-rose-600 font-medium">{errors.totalAmount}</p>}
+            </div>
+
+            {/* Additional / Extra Charges */}
+            <div>
+              <label htmlFor="extraCharges" className="block text-xs font-semibold uppercase tracking-wider text-slate-700">
+                Extra Charges (₹)
+              </label>
+              <div className="relative mt-1.5">
+                <span className="absolute inset-y-0 left-0 flex items-center pl-3.5 text-sm text-slate-400">₹</span>
+                <input
+                  type="number"
+                  id="extraCharges"
+                  min="0"
+                  step="any"
+                  value={extraCharges || ""}
+                  onChange={handleExtraChargesChange}
+                  placeholder="0"
+                  className="block w-full rounded-lg border border-slate-300 bg-white pl-8 pr-3.5 py-2.5 text-sm font-semibold text-slate-900 shadow-2xs focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-100 min-h-[44px]"
+                />
+              </div>
             </div>
 
             {/* Advance Amount */}

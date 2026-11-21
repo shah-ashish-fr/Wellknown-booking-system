@@ -1,4 +1,4 @@
-import { PaymentStatus, BookingSource, BookingStatus, RoomAllocation } from "@/types/booking";
+import { PaymentStatus, BookingSource, BookingStatus, RoomAllocation, RoomPricing, MealSelection } from "@/types/booking";
 import { parseRoomAllocations } from "./room-allocations";
 import {
   formatDateWithWeekday,
@@ -19,6 +19,8 @@ export interface BookingTemplateData {
   rooms: number;
   roomType: string;
   roomAllocations?: RoomAllocation[] | null;
+  roomPricing?: RoomPricing[] | null;
+  mealSelections?: MealSelection[] | null;
   totalAmount: number;
   gstAmount: number;
   advanceAmount: number;
@@ -151,8 +153,24 @@ export function generateGuestConfirmation(booking: BookingTemplateData): string 
 
   const childrenText = booking.children > 0 ? `, ${booking.children} ${booking.children === 1 ? "Child" : "Children"}` : "";
   const allocations = parseRoomAllocations(booking.roomAllocations, booking.roomType, booking.rooms);
+
+  // Check if room-wise pricing exists
+  const pricingList: RoomPricing[] = Array.isArray(booking.roomPricing) ? booking.roomPricing : [];
+  const hasRoomPricing = pricingList.length > 0 && pricingList.some((p) => (p.pricePerNight || 0) > 0);
+
   let roomsText = "";
-  if (allocations.length > 1) {
+  if (hasRoomPricing) {
+    if (pricingList.length > 1) {
+      roomsText = `${booking.rooms} Rooms\n` + pricingList.map((p) => {
+        const pSubtotal = p.subtotal || (p.count * p.pricePerNight * nights);
+        return `  • ${p.count} × ${p.roomType} @ ${formatCurrency(p.pricePerNight)}/night (${nightsText} = ${formatCurrency(pSubtotal)})`;
+      }).join("\n");
+    } else {
+      const p = pricingList[0];
+      const pSubtotal = p.subtotal || (p.count * p.pricePerNight * nights);
+      roomsText = `${booking.rooms} ${booking.rooms === 1 ? "Room" : "Rooms"} (${p.roomType}) @ ${formatCurrency(p.pricePerNight)}/night (${nightsText} = ${formatCurrency(pSubtotal)})`;
+    }
+  } else if (allocations.length > 1) {
     roomsText = `${booking.rooms} Rooms\n` + allocations.map((a) => `  • ${a.count} × ${a.roomType}`).join("\n");
   } else if (allocations.length === 1) {
     roomsText = `${booking.rooms} ${booking.rooms === 1 ? "Room" : "Rooms"} (${allocations[0].roomType})`;
@@ -163,7 +181,7 @@ export function generateGuestConfirmation(booking: BookingTemplateData): string 
 
   let message = `*BOOKING CONFIRMATION* 🏨\n`;
   message += `*${booking.hotel.name}*\n`;
-  message += `*Managed by WellKnown Hospitality and Services*\n\n`;
+  message += `*Managed by WellKnown Hospitality Services*\n\n`;
   message += `Dear *${guestDisplayName}*,\n`;
   message += `Greetings! We are pleased to confirm your reservation at *${booking.hotel.name}*.\n\n`;
 
@@ -175,7 +193,26 @@ export function generateGuestConfirmation(booking: BookingTemplateData): string 
   message += `• *Rooms:* ${roomsText}\n`;
   message += `• *Guests:* ${booking.adults} ${booking.adults === 1 ? "Adult" : "Adults"}${childrenText}\n\n`;
 
+  // Meals section (Hotel Shree Kesari Nandan or when mealSelections exist)
+  const mealsList: MealSelection[] = Array.isArray(booking.mealSelections) ? booking.mealSelections : [];
+  const totalMealCharges = mealsList.reduce((sum, m) => sum + (m.subtotal || 0), 0);
+  if (mealsList.length > 0) {
+    message += `🍽️ *Meal Options:*\n`;
+    for (const m of mealsList) {
+      const daysText = `${m.numberOfDays} ${m.numberOfDays === 1 ? "day" : "days"}`;
+      message += `• *${m.mealType}:* ${formatCurrency(m.pricePerPerson)} × ${m.numberOfPeople} ${m.numberOfPeople === 1 ? "person" : "people"} × ${daysText} = ${formatCurrency(m.subtotal)}\n`;
+    }
+    message += `• *Total Meal Charges:* ${formatCurrency(totalMealCharges)}\n\n`;
+  }
+
+  // Calculate room total if room pricing exists
+  const totalRoomCharges = hasRoomPricing ? pricingList.reduce((sum, p) => sum + (p.subtotal || 0), 0) : 0;
+
   message += `💳 *Payment Summary:*\n`;
+  if (hasRoomPricing && totalMealCharges > 0) {
+    message += `• *Room Charges:* ${formatCurrency(totalRoomCharges)}\n`;
+    message += `• *Meal Charges:* ${formatCurrency(totalMealCharges)}\n`;
+  }
   message += `• *Total Amount:* ${formatCurrency(grandTotal)}${booking.gstAmount > 0 ? " (incl. GST)" : ""}\n`;
   message += `• *Advance Paid:* ${formatCurrency(booking.advanceAmount)}\n`;
   if (balanceDue > 0) {
@@ -205,6 +242,11 @@ export function generateGuestConfirmation(booking: BookingTemplateData): string 
       message += `• *Owner — Emergency Only:* ${contact.emergencyOwner}\n`;
     }
   }
+
+  message += `\n*IMPORTANT INFORMATION & GUEST GUIDELINES*\n`;
+  message += `1. *Valid ID Proof:* Carrying an original Aadhaar Card or other valid government-issued photo ID is mandatory for all guests at the time of check-in.\n`;
+  message += `2. *Early Check-in:* Early check-in is subject to room availability and may involve additional charges. It cannot be guaranteed in advance.\n`;
+  message += `3. *Cancellation Policy:* Cancellations made at least 7 days before the check-in date are eligible for a 100% refund. Cancellations made within 7 days of check-in are subject to the hotel's cancellation policy.\n`;
 
   message += `\nWe look forward to hosting you! For any queries or modifications, please reply to this WhatsApp message.\n`;
   message += `_Safe travels & have a wonderful stay!_ ✨`;
@@ -267,7 +309,7 @@ export function generateHotelConfirmation(booking: BookingTemplateData): string 
   const separator = "━━━━━━━━━━━━━━━━━━";
 
   let message = `🏨 *BOOKING CONFIRMATION — ${booking.hotel.name.toUpperCase()}*\n\n`;
-  message += `*WellKnown Hospitality and Services*\n\n`;
+  message += `*WellKnown Hospitality Services*\n\n`;
   message += `${separator}\n\n`;
 
   message += `📋 *BOOKING DETAILS*\n\n`;
@@ -282,15 +324,45 @@ export function generateHotelConfirmation(booking: BookingTemplateData): string 
   message += `• *Duration:* ${durationText}\n`;
   message += `• *Guests:* ${guestsText}\n`;
   const hotelAllocations = parseRoomAllocations(booking.roomAllocations, booking.roomType, booking.rooms);
+
+  // Check if room-wise pricing exists
+  const pricingList: RoomPricing[] = Array.isArray(booking.roomPricing) ? booking.roomPricing : [];
+  const hasRoomPricing = pricingList.length > 0 && pricingList.some((p) => (p.pricePerNight || 0) > 0);
+
   message += `• *Rooms:* ${booking.rooms}\n`;
-  if (hotelAllocations.length > 1) {
+  if (hasRoomPricing) {
+    message += `• *Room Allocation & Rates:*\n` + pricingList.map((p) => {
+      const pSubtotal = p.subtotal || (p.count * p.pricePerNight * totalNights);
+      return `  • ${p.count} × ${p.roomType} @ ${formatCurrency(p.pricePerNight)}/night (${p.nights || totalNights}N = ${formatCurrency(pSubtotal)})`;
+    }).join("\n") + `\n\n`;
+  } else if (hotelAllocations.length > 1) {
     message += `• *Room Allocation:*\n` + hotelAllocations.map((a) => `  • ${a.count} × ${a.roomType}`).join("\n") + `\n\n`;
   } else {
     message += `• *Room Type:* ${booking.roomType}\n\n`;
   }
 
+  // Meal requirements for hotel staff
+  const mealsList: MealSelection[] = Array.isArray(booking.mealSelections) ? booking.mealSelections : [];
+  const totalMealCharges = mealsList.reduce((sum, m) => sum + (m.subtotal || 0), 0);
+  if (mealsList.length > 0) {
+    message += `🍽️ *MEAL REQUIREMENTS*\n\n`;
+    for (const m of mealsList) {
+      const daysText = `${m.numberOfDays} ${m.numberOfDays === 1 ? "day" : "days"}`;
+      message += `• *${m.mealType}:* For ${m.numberOfPeople} Guests × ${daysText} (${formatCurrency(m.pricePerPerson)}/person = ${formatCurrency(m.subtotal)})\n`;
+    }
+    message += `• *Total Meal Charges:* ${formatCurrency(totalMealCharges)}\n\n`;
+  }
+
   message += `💰 *PAYMENT DETAILS*\n\n`;
-  message += `• *Room Rate:* ${formatCurrency(ratePerNight)} / Night\n`;
+  if (hasRoomPricing) {
+    const totalRoomCharges = pricingList.reduce((sum, p) => sum + (p.subtotal || 0), 0);
+    message += `• *Room Charges:* ${formatCurrency(totalRoomCharges)}\n`;
+  } else {
+    message += `• *Room Rate:* ${formatCurrency(ratePerNight)} / Night\n`;
+  }
+  if (totalMealCharges > 0) {
+    message += `• *Meal Charges:* ${formatCurrency(totalMealCharges)}\n`;
+  }
   message += `• *Total Amount:* ${formatCurrency(grandTotal)}\n`;
   message += `• *Advance Received:* ${formatCurrency(booking.advanceAmount)}\n`;
   message += `• *Balance Payable:* ${formatCurrency(balanceDue)}\n`;
@@ -305,7 +377,8 @@ export function generateHotelConfirmation(booking: BookingTemplateData): string 
 
   message += `${separator}\n\n`;
   message += `*Regards,*\n`;
-  message += `*WellKnown Hospitality and Services*`;
+  message += `*WellKnown Hospitality Services*`;
 
   return message;
 }
+

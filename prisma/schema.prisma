@@ -54,6 +54,8 @@ model Booking {
   rooms              Int           @default(1)
   roomType           String        @default("Standard")
   roomAllocations    Json?
+  roomPricing        Json?
+  mealSelections     Json?
   totalAmount        Float         @default(0)
   gstAmount          Float         @default(0)
   advanceAmount      Float         @default(0)

@@ -18,9 +18,10 @@ import {
   ExternalLink,
   Edit2,
   Users,
+  UtensilsCrossed,
 } from "lucide-react";
 import { prisma } from "@/lib/db";
-import { PaymentStatus, BookingSource, BookingStatus } from "@/types/booking";
+import { PaymentStatus, BookingSource, BookingStatus, RoomPricing, MealSelection } from "@/types/booking";
 import { formatDate, formatDateWithWeekday, formatCurrency, formatGuestFullName } from "@/lib/formatters";
 import { getHotelContactInfo } from "@/lib/whatsapp-templates";
 import { parseRoomAllocations } from "@/lib/room-allocations";
@@ -64,6 +65,32 @@ export default async function BookingDetailsPage({ params, searchParams }: PageP
   const guestDisplayName = formatGuestFullName(booking.guestTitle, booking.guestName);
   const roomAllocations = parseRoomAllocations(booking.roomAllocations, booking.roomType, booking.rooms);
 
+  // Parse roomPricing and mealSelections safely
+  let roomPricing: RoomPricing[] = [];
+  if (booking.roomPricing) {
+    if (Array.isArray(booking.roomPricing)) {
+      roomPricing = booking.roomPricing as any as RoomPricing[];
+    } else if (typeof booking.roomPricing === "string") {
+      try {
+        roomPricing = JSON.parse(booking.roomPricing);
+      } catch {}
+    }
+  }
+
+  let mealSelections: MealSelection[] = [];
+  if (booking.mealSelections) {
+    if (Array.isArray(booking.mealSelections)) {
+      mealSelections = booking.mealSelections as any as MealSelection[];
+    } else if (typeof booking.mealSelections === "string") {
+      try {
+        mealSelections = JSON.parse(booking.mealSelections);
+      } catch {}
+    }
+  }
+
+  const totalRoomCharges = roomPricing.reduce((sum, p) => sum + (p.subtotal || 0), 0);
+  const totalMealCharges = mealSelections.reduce((sum, m) => sum + (m.subtotal || 0), 0);
+
   const bookingTemplateData = {
     bookingId: booking.bookingId,
     guestTitle: booking.guestTitle,
@@ -76,6 +103,8 @@ export default async function BookingDetailsPage({ params, searchParams }: PageP
     rooms: booking.rooms,
     roomType: booking.roomType,
     roomAllocations,
+    roomPricing,
+    mealSelections,
     totalAmount: booking.totalAmount,
     gstAmount: booking.gstAmount,
     advanceAmount: booking.advanceAmount,
@@ -413,13 +442,28 @@ export default async function BookingDetailsPage({ params, searchParams }: PageP
               <p className="mt-1 font-bold text-slate-900">
                 {booking.rooms} {booking.rooms === 1 ? "Room" : "Rooms"}
               </p>
-              <div className="mt-1 space-y-0.5 text-xs text-slate-600">
-                {roomAllocations.map((a, idx) => (
-                  <div key={idx} className="flex items-center gap-1.5 font-medium">
-                    <span className="text-slate-400">•</span>
-                    <span>{a.count} × {a.roomType}</span>
-                  </div>
-                ))}
+              <div className="mt-1 space-y-1 text-xs text-slate-600">
+                {roomPricing.length > 0 ? (
+                  roomPricing.map((p, idx) => (
+                    <div key={idx} className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 py-1 px-2 rounded-md bg-slate-50 border border-slate-100">
+                      <span className="font-medium text-slate-800">
+                        {p.count} × {p.roomType}
+                      </span>
+                      {p.pricePerNight > 0 && (
+                        <span className="text-[11px] font-semibold text-indigo-700">
+                          ₹{p.pricePerNight.toLocaleString("en-IN")}/N × {p.nights || nights}N = ₹{(p.subtotal || p.count * p.pricePerNight * (p.nights || nights)).toLocaleString("en-IN")}
+                        </span>
+                      )}
+                    </div>
+                  ))
+                ) : (
+                  roomAllocations.map((a, idx) => (
+                    <div key={idx} className="flex items-center gap-1.5 font-medium">
+                      <span className="text-slate-400">•</span>
+                      <span>{a.count} × {a.roomType}</span>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
 
@@ -452,6 +496,37 @@ export default async function BookingDetailsPage({ params, searchParams }: PageP
           )}
         </div>
 
+        {/* Card: Meal Options (Visible only when meals are booked) */}
+        {mealSelections.length > 0 && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50/20 p-6 shadow-xs space-y-4">
+            <div className="flex items-center justify-between border-b border-amber-200/60 pb-3">
+              <div className="flex items-center gap-2">
+                <UtensilsCrossed className="h-5 w-5 text-amber-600" />
+                <h2 className="text-base font-bold text-slate-900">Meal Plan ({booking.hotel.name})</h2>
+              </div>
+              <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-800 border border-amber-200">
+                Meals: {formatCurrency(totalMealCharges)}
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              {mealSelections.map((m, idx) => (
+                <div key={idx} className="flex items-center justify-between text-xs sm:text-sm bg-white p-3 rounded-lg border border-amber-100 shadow-2xs">
+                  <div>
+                    <span className="font-bold text-slate-900">{m.mealType}</span>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {formatCurrency(m.pricePerPerson)}/person × {m.numberOfPeople} {m.numberOfPeople === 1 ? "person" : "people"} × {m.numberOfDays} {m.numberOfDays === 1 ? "day" : "days"}
+                    </p>
+                  </div>
+                  <span className="font-bold text-amber-900 text-sm">
+                    {formatCurrency(m.subtotal)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Card 3: Payment Information */}
         <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs space-y-4">
           <div className="flex items-center justify-between border-b border-slate-100 pb-3">
@@ -463,8 +538,29 @@ export default async function BookingDetailsPage({ params, searchParams }: PageP
           </div>
 
           <div className="space-y-2.5 text-xs sm:text-sm">
+            {totalRoomCharges > 0 && (
+              <div className="flex justify-between py-1 border-b border-slate-100">
+                <span className="text-slate-600">Room Charges:</span>
+                <span className="font-semibold text-slate-900">{formatCurrency(totalRoomCharges)}</span>
+              </div>
+            )}
+
+            {totalMealCharges > 0 && (
+              <div className="flex justify-between py-1 border-b border-slate-100">
+                <span className="text-slate-600">Meal Charges:</span>
+                <span className="font-semibold text-amber-800">{formatCurrency(totalMealCharges)}</span>
+              </div>
+            )}
+
+            {totalRoomCharges > 0 && booking.totalAmount > (totalRoomCharges + totalMealCharges) && (
+              <div className="flex justify-between py-1 border-b border-slate-100">
+                <span className="text-slate-600">Additional Charges:</span>
+                <span className="font-semibold text-slate-900">{formatCurrency(booking.totalAmount - totalRoomCharges - totalMealCharges)}</span>
+              </div>
+            )}
+
             <div className="flex justify-between py-1 border-b border-slate-100">
-              <span className="text-slate-600">Base Room Total:</span>
+              <span className="text-slate-600">Base Total:</span>
               <span className="font-semibold text-slate-900">{formatCurrency(booking.totalAmount)}</span>
             </div>
 

@@ -37,3 +37,28 @@ export interface RoomAllocation {
   roomType: string;
   count: number;
 }
+
+/**
+ * Room pricing data stored per room type.
+ * pricePerNight is the price per room per night entered by the user.
+ */
+export interface RoomPricing {
+  roomType: string;
+  count: number;
+  pricePerNight: number;
+  nights: number;
+  subtotal: number;
+}
+
+/**
+ * Meal selection for Hotel Shree Kesari Nandan.
+ */
+export type MealType = "Breakfast" | "Lunch" | "Dinner";
+
+export interface MealSelection {
+  mealType: MealType;
+  pricePerPerson: number;
+  numberOfPeople: number;
+  numberOfDays: number;
+  subtotal: number;
+}
